@@ -4,9 +4,20 @@ import { ModerationService } from '../../core/service/ModerationService';
 import ModuleService from '../../core/service/ModuleService';
 import ShareService from '../../core/service/ShareService';
 import { triggerExistsAndEnabled } from '../../core/util/EventTriggerUtil';
-import Discord from '../discord/discord';
 import Twitch, { twitchLog } from './twitch';
 import parseCheermotes from './functions/parseCheermotes';
+
+// The slice of the Discord module this file's go-live notification touches. Declared
+// structurally rather than imported, because twitch and discord are separate repos now and
+// either can be installed without the other - a compile-time import of discord's class would
+// make this module unbuildable wherever discord is absent. ModuleService already returns
+// undefined in that case, and the guard below was always the real contract.
+interface DiscordGoLiveNotifier {
+  loggedIn: boolean;
+  config: KeyedObject;
+  api: { findUser: (userId: string) => Promise<{ send: (payload: KeyedObject) => void }> };
+  buttons: { makeLinkButton: (label: string, url: string) => { toJSON: () => KeyedObject } };
+}
 
 export default async function OnEventSubReceived(type: string, event: KeyedObject) {
   const twitchModule = ModuleService.getStreamModule('twitch') as Twitch;
@@ -77,7 +88,9 @@ export default async function OnEventSubReceived(type: string, event: KeyedObjec
     if (type == 'stream.online') {
       await twitchModule.api.validateChatbot();
       ShareService.setShare(event.broadcaster_user_login, true);
-      const discord = ModuleService.getCommunityModule('discord') as Discord;
+      const discord = ModuleService.getCommunityModule(
+        'discord',
+      ) as unknown as DiscordGoLiveNotifier;
       if (!discord) {
         return;
       }
