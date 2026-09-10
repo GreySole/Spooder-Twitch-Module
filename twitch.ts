@@ -6,6 +6,7 @@ import { StreamModuleInterface } from '../../interface/StreamModuleInterface';
 import {
   ActionExecutionContext,
   ActionNodeDef,
+  EventGraph,
   KeyedObject,
   TriggerNodeDef,
   userDir,
@@ -512,5 +513,78 @@ export default class Twitch implements StreamModuleInterface {
 
   async onEventFileSaved() {
     this.eventsub.refreshEventSubs();
+    this.syncChannelPointRewardEnabledState();
+  }
+
+  // A reward can be wired up as a channel_point_redeem callback in more than one event, and
+  // those events can sit in different groups - so a reward is only disabled on Twitch once
+  // every group referencing it is disabled, and re-enabled as soon as any of them isn't.
+  async syncChannelPointRewardEnabledState() {
+    if (!this.loggedIn) {
+      return;
+    }
+
+    const disabledGroups = new Set(EventService.getDisabledGroups());
+    const graphs = EventService.getGraphs() as { [eventId: string]: EventGraph };
+
+    const enabledRewardIds = new Set<string>();
+    const disabledRewardIds = new Set<string>();
+
+    for (const eventId in graphs) {
+      const graph = graphs[eventId];
+      const groupEnabled = !disabledGroups.has(graph.group);
+      for (const node of graph.nodes) {
+        if (
+          node.kind !== 'callback' ||
+          node.moduleName !== 'twitch' ||
+          node.nodeTypeId !== 'channel_point_redeem'
+        ) {
+          continue;
+        }
+        const rewardId = node.values?.rewardId;
+        if (!rewardId) {
+          continue;
+        }
+        (groupEnabled ? enabledRewardIds : disabledRewardIds).add(rewardId);
+      }
+    }
+    // A reward referenced by at least one enabled group stays enabled even if some other
+    // disabled group also points at it.
+    for (const rewardId of enabledRewardIds) {
+      disabledRewardIds.delete(rewardId);
+    }
+
+    if (enabledRewardIds.size === 0 && disabledRewardIds.size === 0) {
+      return;
+    }
+
+    // Only rewards this app created can be updated through the API - a reward set up directly
+    // on Twitch's dashboard is readable (for redemption matching) but not ours to toggle.
+    let manageableRewards: KeyedObject[];
+    try {
+      manageableRewards = await this.api.getCustomRewards(true);
+    } catch (error: any) {
+      twitchLog('Failed to fetch custom rewards for enable/disable sync: ', error.message ?? error);
+      return;
+    }
+
+    for (const reward of manageableRewards) {
+      const shouldBeEnabled = enabledRewardIds.has(reward.id)
+        ? true
+        : disabledRewardIds.has(reward.id)
+          ? false
+          : null;
+      if (shouldBeEnabled === null || reward.is_enabled === shouldBeEnabled) {
+        continue;
+      }
+      try {
+        await this.api.updateCustomReward(reward.id, { is_enabled: shouldBeEnabled });
+      } catch (error: any) {
+        twitchLog(
+          `Failed to ${shouldBeEnabled ? 'enable' : 'disable'} reward ${reward.id}: `,
+          error.message ?? error,
+        );
+      }
+    }
   }
 }
