@@ -21,6 +21,7 @@ import {
   REDEEM_TEST_PARAMS,
 } from './TwitchEventSubTriggers';
 import getResponseHandlers from './TwitchResponseHandlers';
+import getRedemptionsWidgetRouter from './TwitchRedemptionsWidgetRouter';
 import getTwitchRouters from './TwitchRouter';
 
 export function twitchLog(...content: any[]) {
@@ -140,6 +141,10 @@ export default class Twitch implements StreamModuleInterface {
 
   getRouters() {
     const { router, publicRouter } = getTwitchRouters();
+    // Each widget gets its own path/router under /twitch/widgets rather than adding routes
+    // to TwitchRouter.ts directly, so a widget's API stays a self-contained file as more
+    // widgets are added. Path matches the static widget's own folder name under widgets/.
+    router.use('/widgets/twitch_redemption_queue', getRedemptionsWidgetRouter());
     return {
       baseUrl: '/twitch',
       router,
@@ -204,6 +209,10 @@ export default class Twitch implements StreamModuleInterface {
           { id: 'username', label: 'Username', dataType: 'string' },
           { id: 'displayName', label: 'Display Name', dataType: 'string' },
           { id: 'userId', label: 'User ID', dataType: 'string' },
+          // OnEventSubReceived always sets streamMessage.message from event.user_input, the
+          // same port id 'message' every other text-bearing trigger (cheer, resub) exposes it
+          // under - this node was just never wired to it.
+          { id: 'message', label: 'User Input', dataType: 'string' },
         ],
         test: {
           params: REDEEM_TEST_PARAMS,

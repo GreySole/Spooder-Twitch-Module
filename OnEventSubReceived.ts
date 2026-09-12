@@ -4,6 +4,7 @@ import { ModerationService } from '../../core/service/ModerationService';
 import ModuleService from '../../core/service/ModuleService';
 import ShareService from '../../core/service/ShareService';
 import { triggerExistsAndEnabled } from '../../core/util/EventTriggerUtil';
+import { broadcastRedemptionEvent } from './TwitchRedemptionsWidgetRouter';
 import Twitch, { twitchLog } from './twitch';
 import parseCheermotes from './functions/parseCheermotes';
 
@@ -19,7 +20,42 @@ interface DiscordGoLiveNotifier {
   buttons: { makeLinkButton: (label: string, url: string) => { toJSON: () => KeyedObject } };
 }
 
-export default async function OnEventSubReceived(type: string, event: KeyedObject) {
+// Twitch's EventSub delivery is at-least-once, on both transports: a keepalive race, a slow
+// 2xx on a webhook, or nothing at all on Twitch's end can all make the exact same notification
+// arrive twice, and Twitch's own docs say to dedupe on `metadata.message_id` rather than assume
+// single delivery. A plain Map is enough here - message ids are opaque strings, and the entries
+// are pruned by age below, not by count.
+const seenMessageIds = new Map<string, number>();
+const MESSAGE_ID_TTL_MS = 10 * 60 * 1000;
+
+function isDuplicateMessage(messageId: string | undefined): boolean {
+  if (!messageId) {
+    // No id to key on (a test event, say) - nothing to compare against, so let it through.
+    return false;
+  }
+  const now = Date.now();
+  for (const [id, seenAt] of seenMessageIds) {
+    if (now - seenAt > MESSAGE_ID_TTL_MS) {
+      seenMessageIds.delete(id);
+    }
+  }
+  if (seenMessageIds.has(messageId)) {
+    return true;
+  }
+  seenMessageIds.set(messageId, now);
+  return false;
+}
+
+export default async function OnEventSubReceived(
+  type: string,
+  event: KeyedObject,
+  messageId?: string,
+) {
+  if (isDuplicateMessage(messageId)) {
+    twitchLog(`Ignoring duplicate ${type} delivery (message ${messageId})`);
+    return;
+  }
+
   const twitchModule = ModuleService.getStreamModule('twitch') as Twitch;
 
   try {
@@ -140,6 +176,10 @@ export default async function OnEventSubReceived(type: string, event: KeyedObjec
   }
 
   if (type == 'channel.channel_points_custom_reward_redemption.add') {
+    // Independent of whether any event-graph trigger below matches this reward - the
+    // widget wants every redemption, automated or not.
+    broadcastRedemptionEvent('add', event);
+
     const modlocks = ModerationService.getModlocks();
     const events = EventService.getEvents();
     for (let e in events) {
@@ -150,7 +190,7 @@ export default async function OnEventSubReceived(type: string, event: KeyedObjec
         if (event.status == 'fulfilled' || events[e].triggers.twitch.reward.override == true) {
           if (modlocks.events[e] != 1) {
             streamMessage.messageType = 'twitch-redeem';
-            EventService.runCommands(streamMessage, e, 'twitch-event');
+            EventService.runCommands(streamMessage, e, 'twitch-event', {}, 'twitch');
           } else {
             //rejectChannelPointReward(event.reward.id, event.id);
             twitchModule.chat.sayInChat(event.reward.title + ' is locked on my end. Sorry.');
@@ -166,6 +206,10 @@ export default async function OnEventSubReceived(type: string, event: KeyedObjec
       }
     }
   } else if (type == 'channel.channel_points_custom_reward_redemption.update') {
+    // Covers both the widget's own approve/refund calls and anything else that changed the
+    // redemption's status (Twitch's own dashboard, another client, auto-fulfillment).
+    broadcastRedemptionEvent('update', event);
+
     const events = EventService.getEvents();
     const modlocks = ModerationService.getModlocks();
     for (let e in events) {
@@ -177,7 +221,7 @@ export default async function OnEventSubReceived(type: string, event: KeyedObjec
         if (event.status == 'fulfilled') {
           if (modlocks.events[e] != 1) {
             streamMessage.messageType = 'twitch-redeem';
-            EventService.runCommands(streamMessage, e, 'event');
+            EventService.runCommands(streamMessage, e, 'event', {}, 'twitch');
           } else {
             twitchModule.chat.sayInChat(event.reward.title + ' is locked on my end. Sorry.');
             continue;
@@ -197,7 +241,7 @@ export default async function OnEventSubReceived(type: string, event: KeyedObjec
       }
 
       if (events[e].triggers.twitch.type == type) {
-        EventService.runCommands(streamMessage, e, 'event');
+        EventService.runCommands(streamMessage, e, 'event', {}, 'twitch');
       }
     }
   }

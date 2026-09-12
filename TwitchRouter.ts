@@ -620,7 +620,7 @@ export default function getTwitchRouters() {
 
     res.status(200).end();
 
-    OnEventSubReceived(type, event);
+    OnEventSubReceived(type, event, req.header('Twitch-Eventsub-Message-Id'));
   });
 
   return {

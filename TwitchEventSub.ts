@@ -16,6 +16,15 @@ export default class TwitchEventSub {
   };
 
   initialize = async () => {
+    // autoLogin() calls this on every login, not just the process's first one (the bot and
+    // broadcaster OAuth grants each trigger their own autoLogin, and a re-auth can too). Without
+    // tearing down whatever's already running, a second call here would leak the previous
+    // module's live socket and subscriptions instead of replacing them - and if the transport
+    // setting also changed between calls, that leak is a second live transport, not just a
+    // second copy of the same one, so every event gets delivered twice.
+    twitchLog('Cleaning up existing module...');
+    await this.eventSubModule?.cleanup();
+
     const twitch = this.getModule();
     if (twitch.oauth.useWebhookTransport) {
       this.eventSubModule = new TwitchEventSubWebhook();

@@ -402,7 +402,7 @@ export default class TwitchEventSubWebsocket {
       } else {
         const type = data.payload.subscription.type;
         const eventPayload = { ...data.payload.event };
-        OnEventSubReceived(type, eventPayload);
+        OnEventSubReceived(type, eventPayload, data.metadata.message_id);
       }
     };
 

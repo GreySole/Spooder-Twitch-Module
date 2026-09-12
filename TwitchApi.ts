@@ -511,6 +511,54 @@ export default class TwitchApi {
     await this.callBroadcasterApi(url, undefined, 'DELETE');
   };
 
+  private redemptionsUrl = async (query: KeyedObject = {}) => {
+    if (this.broadcasterUserID == '') {
+      await this.getBroadcasterId();
+    }
+    const params = new URLSearchParams({ broadcaster_id: this.broadcasterUserID });
+    for (const key in query) {
+      params.set(key, String(query[key]));
+    }
+    return `https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions?${params.toString()}`;
+  };
+
+  // Twitch only lets a redemption read be scoped to one reward at a time, so a channel-wide
+  // pending list means asking per reward and flattening - the widget wants a single list, not
+  // one per reward. A reward that errors (e.g. one Spooder didn't create and can't be queried
+  // for some reason) is dropped rather than failing the whole list.
+  getPendingRedemptions = async (): Promise<KeyedObject[]> => {
+    const rewards = await this.getCustomRewards(false);
+    const redemptionsByReward = await Promise.all(
+      rewards.map(async (reward) => {
+        try {
+          const url = await this.redemptionsUrl({
+            reward_id: reward.id,
+            status: 'UNFULFILLED',
+            sort: 'OLDEST',
+          });
+          const response = (await this.callBroadcasterApi(url)) as KeyedObject;
+          return (response?.data ?? []) as KeyedObject[];
+        } catch (error: any) {
+          twitchLog('Get redemptions error for reward', reward.id, error?.message ?? error);
+          return [];
+        }
+      }),
+    );
+    return redemptionsByReward.flat();
+  };
+
+  // status is 'FULFILLED' to approve a redemption or 'CANCELED' to refund it - Twitch refunds
+  // the channel points automatically on CANCELED, there is no separate refund call.
+  updateRedemptionStatus = async (
+    rewardId: string,
+    redemptionId: string,
+    status: 'FULFILLED' | 'CANCELED',
+  ): Promise<KeyedObject | undefined> => {
+    const url = await this.redemptionsUrl({ id: redemptionId, reward_id: rewardId });
+    const response = (await this.callBroadcasterApi(url, { status }, 'PATCH')) as KeyedObject;
+    return response?.data?.[0];
+  };
+
   getChannelInfo = async (channel?: string | undefined): Promise<KeyedObject> => {
     const oauth = this.getModule().oauth;
     const loggedIn = this.getModule().loggedIn;
