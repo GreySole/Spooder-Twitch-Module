@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Live Chat</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <h1>Live Chat</h1>
+      <div class="bar-actions">
+        <span id="status" class="status" hidden></span>
+        <button id="refresh" class="icon-btn" title="Refresh" aria-label="Refresh">&#8635;</button>
+      </div>
+    </header>
+
+    <div id="error" class="error" hidden></div>
+
+    <ul id="list" class="list"></ul>
+
+    <p id="empty" class="empty" hidden>No messages yet.</p>
+
+    <script src="script.js"></script>
+  </body>
+</html>

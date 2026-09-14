@@ -5,7 +5,10 @@ import ShareService from '../../core/service/ShareService';
 import { processStreamMessage } from '../../core/util/ChatUtil';
 import { triggerExistsAndEnabled } from '../../core/util/EventTriggerUtil';
 import { KeyedObject, StreamMessage } from '../../Types';
+import parseChatMessageEmotes from './functions/parseChatMessageEmotes';
 import { processTwitchEvent, twitchEvents } from './functions/processTwitchMessage';
+import ThirdPartyEmotes from './ThirdPartyEmotes';
+import { broadcastChatMessage } from './TwitchChatWidgetRouter';
 import Twitch, { twitchLog } from './twitch';
 
 function stringifyArray(a: string[]) {
@@ -18,9 +21,31 @@ export default class TwitchChat {
   activeChannels: string[] = [];
   reconnecting: boolean = false;
   intentionalDisconnect: boolean = false;
+  thirdPartyEmotes = new ThirdPartyEmotes();
 
   getModule = () => {
     return ModuleService.getStreamModule('twitch') as Twitch;
+  };
+
+  // tags.badges is Twitch's raw {set_id: version_id} map - not renderable on its own, since a
+  // version's image lives in the Get Chat Badges response, not the IRC tag. Resolved here
+  // (rather than left to the widget) so any consumer of a StreamMessage gets images for free.
+  private resolveBadges = (badgesTag: KeyedObject = {}) => {
+    const badgeMap = this.getModule().api.getCachedBadges();
+    const badges: { setId: string; version: string; url: string; title: string }[] = [];
+    for (const setId in badgesTag) {
+      const version = String(badgesTag[setId]);
+      const versionData = badgeMap.get(setId)?.get(version);
+      if (versionData) {
+        badges.push({
+          setId,
+          version,
+          url: versionData.image_url_2x ?? versionData.image_url_1x ?? versionData.image_url_4x ?? '',
+          title: versionData.title ?? '',
+        });
+      }
+    }
+    return badges;
   };
 
   twitchjsify = (channel: string, tags: KeyedObject, txt: string): StreamMessage => {
@@ -43,6 +68,12 @@ export default class TwitchChat {
 
     const channelName = channel.replace('#', '');
 
+    const api = this.getModule().api;
+    const thirdPartyEmotes = this.thirdPartyEmotes.getCachedEmoteMap(
+      api.broadcasterUserID,
+      api.homeChannel,
+    );
+
     const message = {
       channel: channelName,
       respond: ((responseTxt: string) => {
@@ -62,6 +93,10 @@ export default class TwitchChat {
       isMod: tags.mod == true,
       isSubscriber: tags.subscriber == true,
       isVIP: tags.badges?.vip == true,
+      platformEventData: {
+        badges: this.resolveBadges(tags.badges),
+        segments: parseChatMessageEmotes(txt, newEmotes, thirdPartyEmotes),
+      },
     } as StreamMessage;
 
     return message;
@@ -82,6 +117,10 @@ export default class TwitchChat {
     if (channelName !== this.getModule().api.homeChannel) {
       shareId = this.getModule().shareUsers[streamMessage.channel];
       streamMessage.shareId = shareId;
+    } else {
+      // Shared-channel chat isn't this streamer's own chat, so the widget - scoped to the
+      // home channel - only hears about messages sent there.
+      broadcastChatMessage(streamMessage);
     }
 
     processStreamMessage(streamMessage);

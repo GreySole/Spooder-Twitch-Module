@@ -3,7 +3,10 @@ import ShareService from '../../../core/service/ShareService';
 import { KeyedObject } from '../../../Types';
 import { twitchLog } from '../twitch';
 import TwitchChat from '../TwitchChat';
+import { broadcastModerationEvent } from '../TwitchChatWidgetRouter';
 import parseCheermotes from './parseCheermotes';
+
+const CHAT_WIDGET_MODERATION_EVENTS = ['ban', 'timeout', 'messagedeleted', 'clearchat'];
 
 export const twitchEvents = [
   'messagedeleted',
@@ -290,6 +293,20 @@ export function processTwitchEvent(this: TwitchChat, eventType: string, ...args:
       // For any unhandled events, just attach all args
       message.args = args;
       break;
+  }
+
+  // Fires for moderation done through the chat widget's own buttons just as much as for
+  // another mod acting independently - Twitch relays these over IRC to everyone in the room
+  // regardless of who performed the action, so the widget doesn't need its own success path to
+  // stay in sync. Scoped to the home channel, matching the widget itself.
+  if (
+    CHAT_WIDGET_MODERATION_EVENTS.includes(eventType) &&
+    channelName === homeChannel.replace('#', '')
+  ) {
+    broadcastModerationEvent(eventType as 'ban' | 'timeout' | 'messagedeleted' | 'clearchat', {
+      targetUserId: message.targetUserId,
+      targetMsgId: message.targetMsgId,
+    });
   }
 
   // Call onEvent for all active plugins

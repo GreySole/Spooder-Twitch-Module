@@ -697,6 +697,131 @@ export default class TwitchApi {
     return cached?.data ?? [];
   };
 
+  // Chat badges change about as rarely as cheermotes (a new sub-tier badge now and then), and
+  // like cheermotes a chat message needs one synchronously to render - see getCachedBadges.
+  // Keyed by broadcaster for the same reason as cheermoteCache: the global set is shared, but
+  // the channel set (sub badges, bit badges) is not.
+  badgeCache: {
+    [broadcasterId: string]: { fetchedAt: number; data: Map<string, Map<string, KeyedObject>> };
+  } = {};
+
+  static BADGE_CACHE_MS = 60 * 60 * 1000;
+
+  private indexBadges(sets: KeyedObject[]): Map<string, Map<string, KeyedObject>> {
+    const index = new Map<string, Map<string, KeyedObject>>();
+    for (const set of sets ?? []) {
+      const versions = new Map<string, KeyedObject>();
+      for (const version of set.versions ?? []) {
+        versions.set(String(version.id), version);
+      }
+      index.set(String(set.set_id), versions);
+    }
+    return index;
+  }
+
+  // Global + channel chat badges for a broadcaster, merged into one set_id->version_id->version
+  // map. Get Chat Badges needs no scope beyond a valid token. Failure resolves to an empty map
+  // rather than rejecting, for the same reason as getCheermotes: the caller is event dispatch,
+  // where the cost of no badge map is a message rendered without badges, not a dropped event.
+  getChatBadges = async (broadcasterId?: string): Promise<Map<string, Map<string, KeyedObject>>> => {
+    const id = broadcasterId || this.broadcasterUserID;
+    if (!id || this.getModule().loggedIn == false) {
+      return new Map();
+    }
+
+    const cached = this.badgeCache[id];
+    if (cached && Date.now() - cached.fetchedAt < TwitchApi.BADGE_CACHE_MS) {
+      return cached.data;
+    }
+
+    try {
+      const [globalResponse, channelResponse] = await Promise.all([
+        this.callBroadcasterApi('https://api.twitch.tv/helix/chat/badges/global') as Promise<
+          KeyedObject | undefined
+        >,
+        this.callBroadcasterApi(
+          'https://api.twitch.tv/helix/chat/badges?broadcaster_id=' + id,
+        ) as Promise<KeyedObject | undefined>,
+      ]);
+      // Channel sets are indexed second so a channel's own version of a set (e.g. a
+      // channel-specific subscriber badge) overrides the global entry for that set_id.
+      const merged = this.indexBadges([
+        ...(globalResponse?.data ?? []),
+        ...(channelResponse?.data ?? []),
+      ]);
+      this.badgeCache[id] = { fetchedAt: Date.now(), data: merged };
+      return merged;
+    } catch (e) {
+      twitchLog('getChatBadges error: ', e);
+      return cached?.data ?? new Map();
+    }
+  };
+
+  // The synchronous read for twitchjsify - chat messages are normalized from a plain
+  // synchronous tmi.js handler, so this returns whatever is cached (stale included, which is
+  // nearly always right for a set that changes monthly) and kicks a background refresh when
+  // it isn't fresh. Mirrors getCachedCheermotes.
+  getCachedBadges = (broadcasterId?: string): Map<string, Map<string, KeyedObject>> => {
+    const id = broadcasterId || this.broadcasterUserID;
+    if (!id) {
+      return new Map();
+    }
+    const cached = this.badgeCache[id];
+    if (!cached || Date.now() - cached.fetchedAt >= TwitchApi.BADGE_CACHE_MS) {
+      this.getChatBadges(id).catch(() => {});
+    }
+    return cached?.data ?? new Map();
+  };
+
+  // Moderation endpoints all key off the broadcaster's own id twice - once as who's being
+  // moderated in, once as who's doing the moderating. The broadcaster token is always a valid
+  // moderator of its own channel (Twitch doesn't require a separate moderator grant for the
+  // broadcaster), so there's no dependency on the bot account holding mod status.
+  private moderationUrl = async (path: string, query: KeyedObject = {}) => {
+    if (this.broadcasterUserID == '') {
+      await this.getBroadcasterId();
+    }
+    const params = new URLSearchParams({
+      broadcaster_id: this.broadcasterUserID,
+      moderator_id: this.broadcasterUserID,
+    });
+    for (const key in query) {
+      params.set(key, String(query[key]));
+    }
+    return `https://api.twitch.tv/helix/moderation/${path}?${params.toString()}`;
+  };
+
+  // durationSeconds omitted (or 0) means a permanent ban; Twitch's Ban User endpoint is shared
+  // between ban and timeout and only differs by whether `duration` is present in the body.
+  banOrTimeoutUser = async (
+    userId: string,
+    durationSeconds?: number,
+    reason?: string,
+  ): Promise<KeyedObject | undefined> => {
+    const url = await this.moderationUrl('bans');
+    const body: KeyedObject = { data: { user_id: userId, reason: reason ?? '' } };
+    if (durationSeconds) {
+      body.data.duration = durationSeconds;
+    }
+    const response = (await this.callBroadcasterApi(url, body, 'POST')) as KeyedObject;
+    return response?.data?.[0];
+  };
+
+  banUser = (userId: string, reason?: string) => this.banOrTimeoutUser(userId, undefined, reason);
+
+  timeoutUser = (userId: string, durationSeconds: number, reason?: string) =>
+    this.banOrTimeoutUser(userId, durationSeconds, reason);
+
+  unbanUser = async (userId: string): Promise<void> => {
+    const url = await this.moderationUrl('bans', { user_id: userId });
+    await this.callBroadcasterApi(url, undefined, 'DELETE');
+  };
+
+  deleteChatMessage = async (messageId: string): Promise<void> => {
+    const url = await this.moderationUrl('chat', { message_id: messageId });
+    await this.callBroadcasterApi(url, undefined, 'DELETE');
+  };
+
   getUserInfoById = async (id: string): Promise<KeyedObject> => {
     const oauth = this.getModule().oauth;
     const loggedIn = this.getModule().loggedIn;

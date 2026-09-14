@@ -22,6 +22,7 @@ import {
 } from './TwitchEventSubTriggers';
 import getResponseHandlers from './TwitchResponseHandlers';
 import getRedemptionsWidgetRouter from './TwitchRedemptionsWidgetRouter';
+import getChatWidgetRouter from './TwitchChatWidgetRouter';
 import getTwitchRouters from './TwitchRouter';
 
 export function twitchLog(...content: any[]) {
@@ -145,6 +146,7 @@ export default class Twitch implements StreamModuleInterface {
     // to TwitchRouter.ts directly, so a widget's API stays a self-contained file as more
     // widgets are added. Path matches the static widget's own folder name under widgets/.
     router.use('/widgets/twitch_redemption_queue', getRedemptionsWidgetRouter());
+    router.use('/widgets/twitch_chat', getChatWidgetRouter());
     return {
       baseUrl: '/twitch',
       router,
