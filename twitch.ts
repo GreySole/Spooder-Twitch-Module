@@ -310,13 +310,6 @@ export default class Twitch implements StreamModuleInterface {
         ],
       },
       {
-        id: 'promise_all',
-        label: 'Promise All',
-        description: 'Continues only after every action wired into its exec input has completed.',
-        form: {},
-        defaults: {},
-      },
-      {
         id: 'shoutout',
         label: 'Shoutout',
         description:

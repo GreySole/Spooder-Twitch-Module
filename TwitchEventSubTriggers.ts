@@ -509,7 +509,15 @@ const EVENTSUB_TRIGGER_SPECS: EventSubTriggerSpec[] = [
     subscriptionType: 'stream.online',
     label: 'Stream Online',
     description: 'Fires when the channel goes live.',
-    outputs: [],
+    // The event is about the broadcaster's own channel, not an acting user, so there's no
+    // user_id/user_login/user_name to normalize into StreamMessage's username/displayName/
+    // userId (see 'follow') - these read straight off platformEventData's broadcaster_* keys
+    // instead, same as moderator_user_name/to_broadcaster_user_name do elsewhere in this file.
+    outputs: [
+      { id: 'broadcaster_user_id', label: 'User ID', dataType: 'string' },
+      { id: 'broadcaster_user_login', label: 'Username', dataType: 'string' },
+      { id: 'broadcaster_user_name', label: 'Display Name', dataType: 'string' },
+    ],
     testParams: [
       { id: 'description', label: 'Stream Title' },
       { id: 'itemId', label: 'Category ID' },
