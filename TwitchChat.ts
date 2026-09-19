@@ -1,3 +1,4 @@
+import { backoffDelay } from '../../core/util/BackoffUtil';
 import tmi from 'tmi.js';
 import { EventService } from '../../core/service/EventService';
 import ModuleService from '../../core/service/ModuleService';
@@ -151,6 +152,8 @@ export default class TwitchChat {
         await this.chat.disconnect();
       }
       this.chat.removeAllListeners();
+      // That flag was for the client just replaced; the new one starts out wanting to stay up.
+      this.intentionalDisconnect = false;
     }
 
     this.chat = new tmi.Client({
@@ -162,9 +165,39 @@ export default class TwitchChat {
       },
     });
 
-    await this.chat.connect().catch((error) => {
-      onAuthenticationFailure();
+    // Listeners go on before connecting: a connect that fails emits 'disconnected', and a
+    // handler attached after the await would never hear it - leaving a chat that failed once
+    // (network still down when a retry ran) with nothing left to try again.
+    this.chat.on('message', this.processMessage.bind(this));
+
+    // Register all other Twitch events except 'chat' and 'message'
+
+    twitchEvents.forEach((event) => {
+      this.chat?.on(event as any, (...args: any[]) => {
+        processTwitchEvent.call(this, event, ...args);
+      });
     });
+
+    this.chat.on('disconnected', (reason: string) => {
+      twitchLog('Chat disconnected:', reason);
+      this.scheduleChatReconnect();
+    });
+
+    const connected = await this.chat
+      .connect()
+      .then(() => true)
+      .catch((error) => {
+        twitchLog('Chat connect failed:', error);
+        Promise.resolve(onAuthenticationFailure()).catch((e) =>
+          twitchLog('Could not refresh the chatbot token', e?.message ?? e),
+        );
+        return false;
+      });
+    if (!connected) {
+      this.scheduleChatReconnect();
+      return;
+    }
+    this.reconnectAttempts = 0;
 
     this.chat
       .join(homeChannel)
@@ -177,6 +210,11 @@ export default class TwitchChat {
           this.sayInChat('Stream disconnected. Hold on a sec...');
         } else if (startCase != null) {
           this.sayInChat(startCase);
+        }
+
+        // A new client knows nothing of the channels the old one had joined by hand.
+        for (const channel of this.activeChannels) {
+          this.chat?.join(channel).catch((e) => twitchLog('Chat rejoin fail', channel, e));
         }
 
         // Auto join shares
@@ -203,31 +241,31 @@ export default class TwitchChat {
       .catch((error) => {
         twitchLog('Chat join error: ', error);
       });
+  };
 
-    this.chat.on('message', this.processMessage.bind(this));
+  private reconnectAttempts = 0;
 
-    // Register all other Twitch events except 'chat' and 'message'
-
-    twitchEvents.forEach((event) => {
-      this.chat?.on(event as any, (...args: any[]) => {
-        processTwitchEvent.call(this, event, ...args);
-      });
-    });
-
-    this.chat.on('disconnected', async (reason: string) => {
-      twitchLog('Chat disconnected:', reason);
-      if (this.intentionalDisconnect || this.reconnecting) {
+  // Replaces the chat client after a backoff. The token is re-validated first so an expired one
+  // is refreshed instead of failing the same way every time; if that check can't reach Twitch
+  // either, the new client's failed connect just lands back here for the next, longer wait.
+  private scheduleChatReconnect() {
+    if (this.intentionalDisconnect || this.reconnecting) {
+      return;
+    }
+    this.reconnecting = true;
+    const delay = backoffDelay(this.reconnectAttempts++);
+    twitchLog(`Chat connection lost - reconnecting in ${delay / 1000}s...`);
+    setTimeout(async () => {
+      if (this.intentionalDisconnect) {
         return;
       }
-      this.reconnecting = true;
-      twitchLog('Unexpected disconnect — reconnecting in 5s...');
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-      if (!this.intentionalDisconnect) {
-        this.reconnecting = false;
-        this.runChat('reconnect');
-      }
-    });
-  };
+      this.reconnecting = false;
+      await this.getModule()
+        .api.validateChatbot()
+        .catch((e) => twitchLog('Could not validate the chatbot token before reconnecting', e?.error?.message ?? e));
+      this.runChat('reconnect');
+    }, delay);
+  }
 
   getChatCommands = (shareChannel: string) => {
     const loggedIn = this.getModule().loggedIn;

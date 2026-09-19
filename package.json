@@ -2,6 +2,7 @@
   "name": "@spooder/twitch",
   "spooder_module": {
     "name": "twitch",
+    "displayName": "Twitch",
     "type": "stream",
     "file": "twitch.ts",
     "webui": {
@@ -9,11 +10,17 @@
       "repoName": "Spooder-WebUI-Twitch-Module"
     },
     "widgets": [
-      { "id": "twitch_redemption_queue", "label": "Redemption Queue" },
-      { "id": "twitch_chat", "label": "Live Chat" }
+      {
+        "id": "twitch_redemption_queue",
+        "label": "Redemption Queue"
+      },
+      {
+        "id": "twitch_chat",
+        "label": "Live Chat"
+      }
     ]
   },
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "dependencies": {
     "axios": "^1.11.0",

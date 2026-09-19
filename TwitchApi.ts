@@ -24,11 +24,39 @@ export default class TwitchApi {
     return ModuleService.getStreamModule('twitch') as Twitch;
   };
 
+  // Ends a validation whose token refresh failed. The refresh token being rejected or missing
+  // means only re-authorizing helps ('nologin', which callers stop on); anything else - the
+  // token endpoint unreachable, Twitch having a bad moment - may pass, so it is an 'error'
+  // the login retries. Either way the validation settles: left logging and nothing else, the
+  // promise would never resolve and whatever awaits it would wait forever.
+  private settleRefreshFailure(
+    refreshError: any,
+    who: string,
+    res: (value: KeyedObject) => void,
+    rej: (reason: KeyedObject) => void,
+  ) {
+    // Already a validation result: the re-validation after a successful refresh is what failed.
+    if (refreshError?.status) {
+      (refreshError.status == 'nologin' ? res : rej)(refreshError);
+      return;
+    }
+    twitchLog(`Could not refresh the ${who} token:`, refreshError?.message ?? refreshError);
+    const httpStatus = refreshError?.response?.status;
+    if (typeof refreshError == 'string' || httpStatus == 400 || httpStatus == 401) {
+      res({ status: 'nologin', error: `The ${who} token could not be refreshed. Please authorize again.` });
+    } else {
+      rej({ status: 'error', error: refreshError });
+    }
+  }
+
   validateBroadcaster = async (): Promise<KeyedObject> => {
     return new Promise((res, rej) => {
       const oauth = this.getModule().oauth;
       if (oauth.broadcaster_token == '' || oauth.broadcaster_token == null) {
-        return { status: 'nologin', error: 'No broadcaster token saved. Please authorize.' };
+        // A `return` here would only leave the executor: the promise never settles, and whatever
+        // awaits a validation (a login, a widget request) waits on it forever.
+        res({ status: 'nologin', error: 'No broadcaster token saved. Please authorize.' });
+        return;
       }
       Axios({
         url: 'https://id.twitch.tv/oauth2/validate',
@@ -50,7 +78,7 @@ export default class TwitchApi {
                 await this.validateBroadcaster();
                 res({ status: 'newtoken', newtoken: newtoken });
               })
-              .catch((error: AxiosError) => twitchLog(error.message));
+              .catch((refreshError) => this.settleRefreshFailure(refreshError, 'broadcaster', res, rej));
           } else {
             rej({ status: 'error', error: error });
           }
@@ -65,6 +93,10 @@ export default class TwitchApi {
         twitchLog(
           "No chat oauth saved. Go into the Web UI, click the top for the navigation menu, then click 'authorize'. You must be on localhost to make auth tokens. If this is a fresh Spooder, you'll want to log in to twitch.tv as the account you use to broadcast first. Then go to the EventSub tab to copy your auth tokens to broadcaster.",
         );
+        // Settled rather than abandoned: with no refresh token there is nothing to validate
+        // against, and a promise that never resolves would stall every caller behind it - boot
+        // included.
+        res({ status: 'nologin', error: 'No chat refresh token saved. Please authorize.' });
         return;
       }
       Axios({
@@ -87,7 +119,7 @@ export default class TwitchApi {
                 await this.validateChatbot();
                 res({ status: 'newtoken', newtoken: newtoken });
               })
-              .catch((error: AxiosError) => twitchLog(error.message));
+              .catch((refreshError) => this.settleRefreshFailure(refreshError, 'chatbot', res, rej));
           } else {
             rej({ status: 'error', error: error });
           }

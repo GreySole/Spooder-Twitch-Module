@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { logEffects, spooderLog } from '../../core/Logging';
+import { backoffDelay } from '../../core/util/BackoffUtil';
 import { EventService } from '../../core/service/EventService';
 import ShareService from '../../core/service/ShareService';
 import { StreamModuleInterface } from '../../interface/StreamModuleInterface';
@@ -449,6 +450,18 @@ export default class Twitch implements StreamModuleInterface {
   }
   loggedIn = false;
 
+  private loginAttempts = 0;
+  private loginRetryTimer: NodeJS.Timeout | undefined;
+
+  private scheduleLoginRetry(startChat: boolean) {
+    const delay = backoffDelay(this.loginAttempts++);
+    twitchLog(`Twitch login failed - trying again in ${delay / 1000}s...`);
+    this.loginRetryTimer = setTimeout(() => {
+      this.loginRetryTimer = undefined;
+      this.autoLogin(startChat);
+    }, delay);
+  }
+
   autoLogin(startChat = true) {
     return new Promise<boolean>(async (res, rej) => {
       if (
@@ -464,12 +477,27 @@ export default class Twitch implements StreamModuleInterface {
         return;
       }
 
-      let botStatus = await this.api.validateChatbot();
+      // A login that has to wait out an outage is retried, not abandoned: validating the
+      // tokens is the first thing that needs the network, so that is where a Twitch or
+      // connectivity problem at boot shows up. Left uncaught, the rejection would reach the
+      // process-level crash handler instead.
+      clearTimeout(this.loginRetryTimer);
+      this.loginRetryTimer = undefined;
+
+      let botStatus = await this.api.validateChatbot().catch(
+        (error) => (error?.status ? error : { status: 'error', error }),
+      );
 
       if (botStatus.status == 'newtoken') {
         this.oauth['token'] = botStatus.newtoken;
+      } else if (botStatus.status == 'nologin') {
+        // Missing credentials, not an outage: retrying can't help until someone authorizes.
+        twitchLog('CHATBOT NOT LOGGED IN', botStatus.error);
+        res(false);
+        return;
       } else if (botStatus.status == 'error') {
-        twitchLog('CHATBOT ERROR', botStatus.error);
+        twitchLog('CHATBOT ERROR', botStatus.error?.message ?? botStatus.error);
+        this.scheduleLoginRetry(startChat);
         res(false);
         return;
       }
@@ -478,16 +506,24 @@ export default class Twitch implements StreamModuleInterface {
         this.oauth.broadcaster_refreshToken != '' &&
         this.oauth.broadcaster_refreshToken != null
       ) {
-        let broadcasterStatus = await this.api.validateBroadcaster();
+        let broadcasterStatus = await this.api.validateBroadcaster().catch(
+          (error) => (error?.status ? error : { status: 'error', error }),
+        );
         if (broadcasterStatus.status == 'newtoken') {
           this.oauth['broadcaster_token'] = broadcasterStatus.newtoken;
+        } else if (broadcasterStatus.status == 'nologin') {
+          twitchLog('BROADCASTER NOT LOGGED IN', broadcasterStatus.error);
+          res(false);
+          return;
         } else if (broadcasterStatus.status == 'error') {
-          twitchLog('BROADCASTER ERROR', broadcasterStatus.error);
+          twitchLog('BROADCASTER ERROR', broadcasterStatus.error?.message ?? broadcasterStatus.error);
+          this.scheduleLoginRetry(startChat);
           res(false);
           return;
         }
       }
 
+      this.loginAttempts = 0;
       this.chat.runChat();
       this.eventsub.initialize();
       this.loggedIn = true;
