@@ -166,7 +166,19 @@ export default class TwitchEventSubWebhook {
         subs.data[s].transport.callback === publicUrl + '/twitch/webhooks/eventsub' &&
         !forceRefreshAll
       ) {
-        usedSubs.push(subs.data[s].type);
+        // A raid subscription's `type` is always 'channel.raid' for both directions - only its
+        // `condition` says which. Tracking it by bare type would let one direction's presence
+        // hide the other being missing, so it's tagged '-receive'/'-send' here to match the
+        // keys the create loop below checks.
+        if (subs.data[s].type === 'channel.raid') {
+          usedSubs.push(
+            subs.data[s].condition.to_broadcaster_user_id
+              ? 'channel.raid-receive'
+              : 'channel.raid-send',
+          );
+        } else {
+          usedSubs.push(subs.data[s].type);
+        }
         twitchLog(
           'Skipping delete ' + subs.data[s].type,
           subs.data[s].condition.broadcaster_user_id,
@@ -214,18 +226,28 @@ export default class TwitchEventSubWebhook {
           );
           redeemSet = true;
         }
+      } else if (subtype == 'channel.raid') {
+        // Each direction is created independently, so losing just one (Twitch revoking it,
+        // a partial failure on first setup) gets it recreated on the next refresh instead of
+        // being masked by the other direction still being present.
+        if (usedSubs.includes('channel.raid-send') && usedSubs.includes('channel.raid-receive')) {
+          twitchLog('Already set up ' + subtype);
+          continue;
+        }
+        twitchLog('Refreshing ' + subtype);
+        if (!usedSubs.includes('channel.raid-send')) {
+          await this.initEventSub('channel.raid-send', broadcasterId, botId);
+        }
+        if (!usedSubs.includes('channel.raid-receive')) {
+          await this.initEventSub('channel.raid-receive', broadcasterId, botId);
+        }
       } else {
         if (usedSubs.includes(subtype)) {
           twitchLog('Already set up ' + subtype);
           continue;
         }
         twitchLog('Refreshing ' + subtype);
-        if (subtype == 'channel.raid') {
-          await this.initEventSub(subtype + '-send', broadcasterId, botId);
-          await this.initEventSub(subtype + '-receive', broadcasterId, botId);
-        } else {
-          await this.initEventSub(subtype, broadcasterId, botId);
-        }
+        await this.initEventSub(subtype, broadcasterId, botId);
       }
     }
 
