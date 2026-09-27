@@ -24,6 +24,7 @@ import {
 import getResponseHandlers from './TwitchResponseHandlers';
 import getRedemptionsWidgetRouter from './TwitchRedemptionsWidgetRouter';
 import getChatWidgetRouter from './TwitchChatWidgetRouter';
+import { modSafeRouter } from '../../core/util/ModRouterUtil';
 import getTwitchRouters from './TwitchRouter';
 
 export function twitchLog(...content: any[]) {
@@ -152,6 +153,14 @@ export default class Twitch implements StreamModuleInterface {
       baseUrl: '/twitch',
       router,
       publicRouter,
+      // What the Twitch node inspectors and test panel call: reading the channel's rewards, and
+      // firing a mock event. Creating, editing and deleting rewards stays the owner's.
+      modRouter: modSafeRouter(router, [
+        'GET /get_channelpoint_rewards',
+        'GET /is_cli_installed',
+        'GET /get_test_eventsub_status',
+        'POST /test_trigger_node',
+      ]),
     };
   }
 
