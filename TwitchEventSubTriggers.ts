@@ -241,6 +241,9 @@ const EVENTSUB_TRIGGER_SPECS: EventSubTriggerSpec[] = [
       { id: 'tier', label: 'Tier', dataType: 'string' },
       { id: 'cumulative_months', label: 'Cumulative Months', dataType: 'number' },
       { id: 'streak_months', label: 'Streak Months', dataType: 'number' },
+      // The viewer's own text with the resub. Twitch nests it as { text, emotes } - the
+      // handler in OnEventSubReceived flattens it to the text, like every other message port.
+      { id: 'message', label: 'Message', dataType: 'string' },
     ],
     testParams: ['tier', { id: 'cost', label: 'Streak Months', default: 3 }],
   },

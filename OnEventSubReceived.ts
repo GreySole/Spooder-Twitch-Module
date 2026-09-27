@@ -166,6 +166,16 @@ export default async function OnEventSubReceived(
     streamMessage.platformEventData!.cheermotes = matches;
   }
 
+  if (type == 'channel.subscription.message') {
+    // Twitch sends the resub message as { text, emotes }, not a string. Flattened here so the
+    // Message port - and anything reading streamMessage.message - gets the viewer's text; the
+    // event's own payload is still whole under platformEventData for anything needing emotes.
+    const text = event.message?.text ?? '';
+    streamMessage.message = text;
+    streamMessage.platformEventData!.message = text;
+    streamMessage.platformEventData!.messageEmotes = event.message?.emotes ?? [];
+  }
+
   if (type == 'channel.raid') {
     await twitchModule.api.getBroadcasterId();
     // The Raid trigger node's `isReceived` port: true when this channel is the raid's target,
@@ -180,59 +190,13 @@ export default async function OnEventSubReceived(
     // widget wants every redemption, automated or not.
     broadcastRedemptionEvent('add', event);
 
-    const modlocks = ModerationService.getModlocks();
-    const events = EventService.getEvents();
-    for (let e in events) {
-      if (!triggerExistsAndEnabled(events[e], 'twitch')) {
-        continue;
-      }
-      if (events[e].triggers.twitch.reward.id == event.reward.id) {
-        if (event.status == 'fulfilled' || events[e].triggers.twitch.reward.override == true) {
-          if (modlocks.events[e] != 1) {
-            streamMessage.messageType = 'twitch-redeem';
-            EventService.runCommands(streamMessage, e, 'twitch-event', {}, 'twitch');
-          } else {
-            //rejectChannelPointReward(event.reward.id, event.id);
-            twitchModule.chat.sayInChat(event.reward.title + ' is locked on my end. Sorry.');
-            continue;
-          }
-        } else if (events[e].triggers.twitch.reward.override == false && modlocks.events[e] == 1) {
-          twitchModule.chat.sayInChat(
-            "MODS! This event is locked on my end. I can't reject it myself because I didn't create it :( please either lift the lock on " +
-              e +
-              ' or reject it.',
-          );
-        }
-      }
-    }
+    dispatchRedemption(streamMessage, event, 'add');
   } else if (type == 'channel.channel_points_custom_reward_redemption.update') {
     // Covers both the widget's own approve/refund calls and anything else that changed the
     // redemption's status (Twitch's own dashboard, another client, auto-fulfillment).
     broadcastRedemptionEvent('update', event);
 
-    const events = EventService.getEvents();
-    const modlocks = ModerationService.getModlocks();
-    for (let e in events) {
-      if (
-        triggerExistsAndEnabled(events[e], 'twitch') &&
-        events[e].triggers.twitch.reward.id == event.reward.id &&
-        events[e].triggers.twitch.reward.override == false
-      ) {
-        if (event.status == 'fulfilled') {
-          if (modlocks.events[e] != 1) {
-            streamMessage.messageType = 'twitch-redeem';
-            EventService.runCommands(streamMessage, e, 'event', {}, 'twitch');
-          } else {
-            twitchModule.chat.sayInChat(event.reward.title + ' is locked on my end. Sorry.');
-            continue;
-          }
-        } else {
-          twitchModule.chat.sayInChat(
-            event.user_name + ' Sorry, the ' + event.reward.title + ' is a no go.',
-          );
-        }
-      }
-    }
+    dispatchRedemption(streamMessage, event, 'update');
   } else {
     const events = EventService.getEvents();
     for (let e in events) {
@@ -242,6 +206,63 @@ export default async function OnEventSubReceived(
 
       if (events[e].triggers.twitch.type == type) {
         EventService.runCommands(streamMessage, e, 'event', {}, 'twitch');
+      }
+    }
+  }
+}
+
+// Matches the redemption against each Channel Point Redeem trigger node by reward id and fires
+// only that node's exec branch. Going per node (rather than per event) matters because a graph can
+// hold several redeem triggers, and the flat triggers.twitch view only keeps one of them.
+// 'add' runs on fulfilled redemptions or when the node overrides auto-fulfill; 'update' runs
+// when a non-overriding redemption is later fulfilled (approved by a mod, say).
+function dispatchRedemption(
+  streamMessage: StreamMessage,
+  event: KeyedObject,
+  phase: 'add' | 'update',
+) {
+  const twitchModule = ModuleService.getStreamModule('twitch') as Twitch;
+  const modlocks = ModerationService.getModlocks();
+  const graphs = EventService.getGraphs();
+  const events = EventService.getEvents();
+  twitchLog(
+    `Redemption ${phase}: reward ${event.reward?.id} (${event.reward?.title}), status ${event.status}`,
+  );
+  for (const e in graphs) {
+    if (!triggerExistsAndEnabled(events[e] ?? { triggers: {} }, 'twitch')) {
+      continue;
+    }
+    for (const node of graphs[e].nodes) {
+      if (
+        node.kind !== 'callback' ||
+        node.moduleName !== 'twitch' ||
+        node.nodeTypeId !== 'channel_point_redeem' ||
+        !node.values.rewardId ||
+        node.values.rewardId != event.reward.id
+      ) {
+        continue;
+      }
+      const override = node.values.overrideAutoFulfill == true;
+      twitchLog(
+        `Redemption ${phase} matched ${e}/${node.id} (override ${override}, status ${event.status}, locked ${modlocks.events[e] == 1})`,
+      );
+      const shouldRun =
+        phase == 'add'
+          ? event.status == 'fulfilled' || override
+          : !override && event.status == 'fulfilled';
+      if (shouldRun) {
+        if (modlocks.events[e] != 1) {
+          streamMessage.messageType = 'twitch-redeem';
+          EventService.runCommandsFromNode(streamMessage, e, node.id);
+        } else {
+          twitchModule.chat.sayInChat(event.reward.title + ' is locked on my end. Sorry.');
+        }
+      } else if (phase == 'add' && !override && modlocks.events[e] == 1) {
+        twitchModule.chat.sayInChat(
+          "MODS! This event is locked on my end. I can't reject it myself because I didn't create it :( please either lift the lock on " +
+            e +
+            ' or reject it.',
+        );
       }
     }
   }
