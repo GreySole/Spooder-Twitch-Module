@@ -471,8 +471,20 @@ export default class Twitch implements StreamModuleInterface {
     }, delay);
   }
 
-  autoLogin(startChat = true) {
-    return new Promise<boolean>(async (res, rej) => {
+  // Never rejects: an unexpected failure is retried like an outage, so a bad token or a
+  // throwing startup step cannot surface as an unhandled rejection and take the app down.
+  async autoLogin(startChat = true): Promise<boolean> {
+    try {
+      return await this.runAutoLogin(startChat);
+    } catch (error: any) {
+      twitchLog('Twitch login error', error?.message ?? error);
+      this.scheduleLoginRetry(startChat);
+      return false;
+    }
+  }
+
+  private async runAutoLogin(startChat: boolean): Promise<boolean> {
+    {
       if (
         this.oauth.token == '' ||
         this.oauth.token == null ||
@@ -482,8 +494,7 @@ export default class Twitch implements StreamModuleInterface {
         this.oauth['client-secret'] == null
       ) {
         twitchLog('No Twitch tokens.');
-        res(false);
-        return;
+        return false;
       }
 
       // A login that has to wait out an outage is retried, not abandoned: validating the
@@ -502,13 +513,11 @@ export default class Twitch implements StreamModuleInterface {
       } else if (botStatus.status == 'nologin') {
         // Missing credentials, not an outage: retrying can't help until someone authorizes.
         twitchLog('CHATBOT NOT LOGGED IN', botStatus.error);
-        res(false);
-        return;
+        return false;
       } else if (botStatus.status == 'error') {
         twitchLog('CHATBOT ERROR', botStatus.error?.message ?? botStatus.error);
         this.scheduleLoginRetry(startChat);
-        res(false);
-        return;
+        return false;
       }
 
       if (
@@ -522,13 +531,11 @@ export default class Twitch implements StreamModuleInterface {
           this.oauth['broadcaster_token'] = broadcasterStatus.newtoken;
         } else if (broadcasterStatus.status == 'nologin') {
           twitchLog('BROADCASTER NOT LOGGED IN', broadcasterStatus.error);
-          res(false);
-          return;
+          return false;
         } else if (broadcasterStatus.status == 'error') {
           twitchLog('BROADCASTER ERROR', broadcasterStatus.error?.message ?? broadcasterStatus.error);
           this.scheduleLoginRetry(startChat);
-          res(false);
-          return;
+          return false;
         }
       }
 
@@ -543,8 +550,8 @@ export default class Twitch implements StreamModuleInterface {
         .getBroadcasterId()
         .then((broadcasterId) => this.api.getCheermotes(broadcasterId))
         .catch(() => {});
-      res(true);
-    });
+      return true;
+    }
   }
 
   get sayInChat() {

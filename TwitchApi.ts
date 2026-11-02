@@ -303,6 +303,7 @@ export default class TwitchApi {
       if (oauth.refreshToken == '' || oauth.refreshToken == null) {
         twitchLog('NO REFRESH TOKEN IN twitch.json');
         rej('NO REFRESH TOKEN IN twitch.json');
+        return;
       }
       var refreshParams =
         '?client_id=' +
@@ -322,6 +323,8 @@ export default class TwitchApi {
               twitchLog('oauth saved!');
               res(oauth.token);
             });
+          } else {
+            rej('Token refresh response had no access_token');
           }
         })
         .catch((error: AxiosError) => {
@@ -337,6 +340,7 @@ export default class TwitchApi {
       const oauth = this.getModule().oauth;
       if (oauth.broadcaster_refreshToken == '' || oauth.broadcaster_refreshToken == null) {
         rej('Broadcaster refresh error: No broadcaster refresh token');
+        return;
       }
 
       var refreshParams =
@@ -358,6 +362,8 @@ export default class TwitchApi {
               twitchLog('broadcaster oauth saved!');
               res(oauth.broadcaster_token);
             });
+          } else {
+            rej('Token refresh response had no access_token');
           }
         })
         .catch((error: AxiosError) => {
